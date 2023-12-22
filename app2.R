@@ -71,7 +71,7 @@ server <- function(input, output, session) {
       data.frame(Identifiers = "")  # Dummy data if no masknames file is uploaded
     }
   })
-  # add new line
+  
   # Dynamically update variable prefixes based on selected variables
   output$variable_prefixes <- renderUI({
     variable_names <- input$variables
