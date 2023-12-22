@@ -1,11 +1,3 @@
-#
-# This is a Shiny web application. You can run the application by clicking
-# the 'Run App' button above.
-#
-# Find out more about building applications with Shiny here:
-#
-#    http://shiny.rstudio.com/
-#
 
 library(shiny)
 library(readr)
@@ -33,7 +25,7 @@ ui <- fluidPage(
       selectInput("separator", "Select separator", choices = c(",", ";", "\t"), selected = ","),
       # Header selection
       checkboxInput("header", "File contains headers", value = TRUE),
-  
+      
       #Project Code
       #textInput("projcode","Enter Proj Code",value=TRUE),
       
@@ -43,11 +35,17 @@ ui <- fluidPage(
       textInput("salt","Insert Salt",width = "1000px"),
       # Text inputs for variable prefixes
       uiOutput("variable_prefixes"),
-
+      
       # Generate output file button
       downloadButton("key", "Generate Key"),
       downloadButton("tokenft", "Tokenise Free Text"),
-      fileInput("masknames","Masked FT"),
+      radioButtons("uploadMask", "Choose Masknames Source:",
+                   choices = c("Upload File", "No Masknames"),
+                   selected = "No Masknames"),
+      conditionalPanel(
+        condition = "input.uploadMask == 'Upload File'",
+        fileInput("masknames", "Masked FT")
+      ),
       downloadButton("ddi", "Generate De-identified Data")
     ),
     # Main panel
@@ -66,10 +64,14 @@ server <- function(input, output, session) {
   })
   
   freetext <- reactive({
-    req(input$masknames)
-    import(input$masknames$datapath)
+    if (input$uploadMask == "Upload File") {
+      req(input$masknames)
+      import(input$masknames$datapath)
+    } else {
+      data.frame(Identifiers = "")  # Dummy data if no masknames file is uploaded
+    }
   })
- 
+  
   # Dynamically update variable prefixes based on selected variables
   output$variable_prefixes <- renderUI({
     variable_names <- input$variables
@@ -100,7 +102,7 @@ server <- function(input, output, session) {
     x<-paste0(front_salt,x,end_salt)
     anon_x<-sapply(x, function(y) digest(y,"sha256"))
     unname(anon_x)
-    }
+  }
   
   # Update variable selection choices based on the uploaded file
   observe({
@@ -128,9 +130,9 @@ server <- function(input, output, session) {
     prefixes <- variable_prefixes()
     
     key_data<-data()[, input$variables, drop = FALSE]%>% distinct()%>%
-      rename_all(funs(paste0("Anon",.)))%>%
-      mutate_all(funs(anonymise))%>%
-      mutate_all(funs(paste0(str_sub(.,1,5),str_sub(.,-5,-1))))%>%
+      rename_with(~paste0("Anon", .), everything())%>%
+      mutate(across(everything(), ~anonymise(.)))%>%
+      mutate(across(everything(), ~paste0(str_sub(.,1,5),str_sub(.,-5,-1))))%>%
       bind_cols(selected)
     
     # Add prefixes to the corresponding columns
@@ -147,7 +149,8 @@ server <- function(input, output, session) {
   # anonymise data
   anony_data <- reactive({
     req(data(), input$variables, key())
-    ddi<-data()%>% left_join(key())%>%select(-input$variables)%>%
+    ddi<-data()%>% left_join(key())%>%
+      select(-input$variables)%>%
       select(-input$variablesrem)%>%
       select(contains("Anon"),everything())
     
@@ -165,14 +168,14 @@ server <- function(input, output, session) {
           Sys.sleep(0.01)
           incProgress(1/100, detail = paste(i, "%"))
         }
-      req(key())
-      key <- key()
-      write.csv(key, file, row.names = FALSE)
+        req(key())
+        key <- key()
+        write.csv(key, file, row.names = FALSE)
       })
     }
   )
   
-  # export anonymised data
+  # export anonymized data
   output$ddi <- downloadHandler(
     filename = function() {
       paste("de-i-file", Sys.Date(), ".csv", sep = "")
@@ -184,16 +187,19 @@ server <- function(input, output, session) {
           Sys.sleep(0.01)
           incProgress(1/100, detail = paste(i, "%"))
         }
-      req(anony_data())
-      if (!isTruthy(freetext())) {
-        anony_data <- anony_data()
-        return(anony_data)
-      } else {
-        anony_data <- anony_data() %>% 
-          mutate_all(funs(str_replace_all(., paste0(freetext()$Identifiers,collapse="|"), "XXX")))
-      }
-      # Write the output data frame to a CSV file
-      write.csv(anony_data, file, row.names = FALSE)
+        req(anony_data(), freetext())
+        # get the output from freetext() and use it in if else logic
+        freetext_value <- freetext()
+        # issue to resolve: else logic still runs when freetext output is a dummy df
+        anony_data_result <- if (length(freetext_value$Identifiers)==0) {
+          anony_data()
+        } else {
+          anony_data() %>%
+            mutate(across(everything(), 
+                          ~str_replace_all(., paste0(freetext_value$Identifiers,collapse="|"), "XXX")))
+        }
+        write.csv(anony_data_result, file, row.names = FALSE)
+        
       })
     }
   )
@@ -232,9 +238,7 @@ server <- function(input, output, session) {
       }
       
       words <- preprocess_and_tokenize(selected, c("value"))
-      
       write.csv(words, file, row.names = FALSE)
-      
     }
   )
 }
