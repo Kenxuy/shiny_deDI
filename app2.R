@@ -50,19 +50,23 @@ ui <- fluidPage(
     ),
     # Main panel
     mainPanel(
-      # Display the selected variables
-      DTOutput("data_table")
+      # Output: Tabset w/ plot, summary, and table ----
+      tabsetPanel(type = "tabs",
+                  tabPanel("Table", DTOutput("data_table")),
+                  tabPanel("Summary", tableOutput("summary"))
+      )
     )
   )
 )
 
 server <- function(input, output, session) {
-  # Read the uploaded file
+  # Read the uploaded raw data file
   data <- reactive({
     req(input$file)
     read_delim(input$file$datapath, delim = input$separator, col_names = input$header)
   })
   
+  # Read the uploaded freetext identifier file if no file uploaded, generate a dummy df
   freetext <- reactive({
     if (input$uploadMask == "Upload File") {
       req(input$masknames)
@@ -119,6 +123,14 @@ server <- function(input, output, session) {
     req(data())
     selected <- data() %>% select(-input$variablesrem)
     datatable(selected)
+  })
+  
+  # Generate a summary of the data ----
+  output$summary <- renderTable({
+    columns_info <- data.frame(
+      Column_Name = names(data()),
+      Data_Type = sapply(data(), function(x) class(x)[1])
+    )
   })
   
   # Generate key
