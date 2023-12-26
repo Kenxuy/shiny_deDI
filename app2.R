@@ -18,42 +18,45 @@ ui <- fluidPage(
   # Sidebar layout
   sidebarLayout(
     sidebarPanel(
-      # File input
-      fileInput("file", "Choose a file"),
+      tabsetPanel(
+        tabPanel("De-identify", value = "panel1", 
+                 # File input
+                 fileInput("file", "Choose raw data file"),
+                 
+                 # Separator selection
+                 selectInput("separator", "Select separator", choices = c(",", ";", "\t"), selected = ","),
+                 # Header selection
+                 checkboxInput("header", "File contains headers", value = TRUE),
+                 
+                 # Variable selection
+                 selectInput("variables", "Select identifier variables", choices = NULL, multiple = TRUE),
+                 selectInput("variablesrem", "Select removable variables", choices = NULL, multiple = TRUE),
+                 textInput("salt","Insert Salt",width = "1000px"),
+                 # Text inputs for variable prefixes
+                 uiOutput("variable_prefixes"),
+                 
+                 # Generate output file button
+                 downloadButton("key", "Generate Key"),
+                 downloadButton("tokenft", "Tokenise Free Text"),
+                 radioButtons("uploadMask", "Choose Masknames Source:",
+                              choices = c("Upload File", "No Masknames"),
+                              selected = "No Masknames"),
+                 conditionalPanel(
+                   condition = "input.uploadMask == 'Upload File'",
+                   fileInput("masknames", "Masked FT")
+                 ),
+                 downloadButton("ddi", "Generate De-identified Data")),
+        tabPanel("Review", value = "panel2", actionButton("DI_data", "De-Identify Data"))
+      )
       
-      # Separator selection
-      selectInput("separator", "Select separator", choices = c(",", ";", "\t"), selected = ","),
-      # Header selection
-      checkboxInput("header", "File contains headers", value = TRUE),
-      
-      #Project Code
-      #textInput("projcode","Enter Proj Code",value=TRUE),
-      
-      # Variable selection
-      selectInput("variables", "Select identifier variables", choices = NULL, multiple = TRUE),
-      selectInput("variablesrem", "Select removable variables", choices = NULL, multiple = TRUE),
-      textInput("salt","Insert Salt",width = "1000px"),
-      # Text inputs for variable prefixes
-      uiOutput("variable_prefixes"),
-      
-      # Generate output file button
-      downloadButton("key", "Generate Key"),
-      downloadButton("tokenft", "Tokenise Free Text"),
-      radioButtons("uploadMask", "Choose Masknames Source:",
-                   choices = c("Upload File", "No Masknames"),
-                   selected = "No Masknames"),
-      conditionalPanel(
-        condition = "input.uploadMask == 'Upload File'",
-        fileInput("masknames", "Masked FT")
-      ),
-      downloadButton("ddi", "Generate De-identified Data")
     ),
     # Main panel
     mainPanel(
       # Output: Tabset w/ plot, summary, and table ----
       tabsetPanel(type = "tabs",
-                  tabPanel("Table", DTOutput("data_table")),
-                  tabPanel("Summary", tableOutput("summary"))
+                  tabPanel("Raw Data", DTOutput("data_table")),
+                  tabPanel("De-Identified Data", DTOutput("DI_table")),
+                  tabPanel("Summary", tableOutput("summary"), tableOutput("records"))
       )
     )
   )
@@ -66,13 +69,13 @@ server <- function(input, output, session) {
     read_delim(input$file$datapath, delim = input$separator, col_names = input$header)
   })
   
-  # Read the uploaded freetext identifier file if no file uploaded, generate a dummy df
+  # Read the uploaded freetext identifier file
   freetext <- reactive({
     if (input$uploadMask == "Upload File") {
       req(input$masknames)
       import(input$masknames$datapath)
     } else {
-      data.frame(Identifiers = "")  # Dummy data if no masknames file is uploaded
+      data.frame(Identifiers = NA)  # Dummy data if no masknames file is uploaded
     }
   })
   
@@ -128,10 +131,13 @@ server <- function(input, output, session) {
   # Generate a summary of the data ----
   output$summary <- renderTable({
     columns_info <- data.frame(
+      Index = seq_len(ncol(data())),
       Column_Name = names(data()),
-      Data_Type = sapply(data(), function(x) class(x)[1])
+      Data_Type = sapply(data(), function(x) class(x)[1]),
+      Number_of_records = sapply(data(), function(x) length(unique(x)))
     )
   })
+  
   
   # Generate key
   key <- reactive({
@@ -160,13 +166,33 @@ server <- function(input, output, session) {
   
   # anonymise data
   anony_data <- reactive({
-    req(data(), input$variables, key())
-    ddi<-data()%>% left_join(key())%>%
-      select(-input$variables)%>%
-      select(-input$variablesrem)%>%
-      select(contains("Anon"),everything())
-    
+    # Progress indicator starts
+    withProgress(message = 'Anonymizing Data...', value = 0, {
+      for (i in 1:100) {
+        # Simulate key generation process (replace this with your actual key generation logic)
+        Sys.sleep(0.01)
+        incProgress(1/100, detail = paste(i, "%"))
+      }
+      req(data(), input$variables, key())
+      ddi<-data()%>% left_join(key())%>%
+        select(-input$variables)%>%
+        select(-input$variablesrem)%>%
+        select(contains("Anon"),everything()) %>% 
+        # mask free-text identifiers if any
+        mutate(across(everything(), function(x) {
+          if (length(freetext()$Identifiers!=0)) {
+            str_replace_all(x, paste0(freetext()$Identifiers,collapse="|"), "XXX")
+          } else {x}}))
+    })
   })
+  
+  # render De-identified Data
+  observeEvent(input$DI_data, {
+    output$DI_table <- renderDT(
+      anony_data()
+    )
+  })
+  
   
   # export key
   output$key <- downloadHandler(
@@ -192,29 +218,12 @@ server <- function(input, output, session) {
     filename = function() {
       paste("de-i-file", Sys.Date(), ".csv", sep = "")
     },content = function(file) {
-      # Progress indicator starts
-      withProgress(message = 'Anonymizing Data...', value = 0, {
-        for (i in 1:100) {
-          # Simulate key generation process (replace this with your actual key generation logic)
-          Sys.sleep(0.01)
-          incProgress(1/100, detail = paste(i, "%"))
-        }
-        req(anony_data(), freetext())
-        # get the output from freetext() and use it in if else logic
-        freetext_value <- freetext()
-        # issue to resolve: else logic still runs when freetext output is a dummy df
-        anony_data_result <- if (length(freetext_value$Identifiers)==0) {
-          anony_data()
-        } else {
-          anony_data() %>%
-            mutate(across(everything(), 
-                          ~str_replace_all(., paste0(freetext_value$Identifiers,collapse="|"), "XXX")))
-        }
-        write.csv(anony_data_result, file, row.names = FALSE)
-        
-      })
-    }
+      req(anony_data())
+      anony_data_result <- anony_data()
+      write.csv(anony_data_result, file, row.names = FALSE)
+    }    
   )
+  
   
   # export tokenized text
   output$tokenft<-downloadHandler(
