@@ -46,7 +46,12 @@ ui <- fluidPage(
                    fileInput("masknames", "Masked FT")
                  ),
                  downloadButton("ddi", "Generate De-identified Data")),
-        tabPanel("Review", value = "panel2", actionButton("DI_data", "De-Identify Data"))
+        tabPanel("Review", value = "panel2", 
+                 helpText("Click to de-identify data"),
+                 actionButton("DI_data", "De-Identify Data"),
+                 helpText("Calculate K-anonymity"),
+                 selectInput("variables_k", "Select variables", choices = NULL, multiple = TRUE),
+                 actionButton("K_anony", "Calculate K-anonymity"))
       )
       
     ),
@@ -121,7 +126,7 @@ server <- function(input, output, session) {
     updateSelectInput(session, "variablesrem", choices = names(data()))
   })
   
-  # Display the table
+  # Display raw data
   output$data_table <- renderDT({
     req(data())
     selected <- data() %>% select(-input$variablesrem)
@@ -138,9 +143,15 @@ server <- function(input, output, session) {
     )
   })
   
+  # store key, anony_data
+  processed_data <- reactiveValues(
+    key_data = NULL,
+    ddi = NULL
+  )
   
   # Generate key
   key <- reactive({
+    if (is.null(processed_data$key_data)) {
     req(data(), input$variables)
     # distinct identifier columns
     selected <- data()[, input$variables, drop = FALSE]%>% distinct()
@@ -159,13 +170,13 @@ server <- function(input, output, session) {
       prefix <- prefixes$Prefix[i]
       key_data[[paste0("Anon", variable)]] <- paste0(prefix, key_data[[paste0("Anon", variable)]])
     }
-    
     key_data
-    
+    }
   })
   
   # anonymise data
   anony_data <- reactive({
+    
     # Progress indicator starts
     withProgress(message = 'Anonymizing Data...', value = 0, {
       for (i in 1:100) {
@@ -173,8 +184,15 @@ server <- function(input, output, session) {
         Sys.sleep(0.01)
         incProgress(1/100, detail = paste(i, "%"))
       }
-      req(data(), input$variables, key())
-      ddi<-data()%>% left_join(key())%>%
+      req(data(), input$variables)
+      # check whether key has been generated before
+      ddi<- if (is.null(processed_data$key_data)) {
+        data()%>% left_join(key())
+      } else {
+        data()%>% left_join(processed_data$key_data)
+      }
+        
+      ddi <- ddi %>% 
         select(-input$variables)%>%
         select(-input$variablesrem)%>%
         select(contains("Anon"),everything()) %>% 
@@ -183,14 +201,23 @@ server <- function(input, output, session) {
           if (length(freetext()$Identifiers!=0)) {
             str_replace_all(x, paste0(freetext()$Identifiers,collapse="|"), "XXX")
           } else {x}}))
+      
+     processed_data$ddi <- ddi 
     })
+    
   })
   
-  # render De-identified Data
+  # render De-identified Data when "De-identify data" is clicked
   observeEvent(input$DI_data, {
     output$DI_table <- renderDT(
-      anony_data()
-    )
+      if (is.null(processed_data$key_data)) {
+      isolate({ # prevent table from re-rendering when other inputs of anony() changes 
+        processed_data$ddi <- anony_data()
+      })
+        processed_data$ddi
+      }
+     )
+  
   })
   
   
@@ -199,6 +226,7 @@ server <- function(input, output, session) {
     filename = function() {
       paste("key", Sys.Date(), ".csv", sep = "")
     },content = function(file) {
+      if (is.null(processed_data$key_data)) {
       # Progress indicator starts
       withProgress(message = 'Generating Key...', value = 0, {
         for (i in 1:100) {
@@ -206,10 +234,12 @@ server <- function(input, output, session) {
           Sys.sleep(0.01)
           incProgress(1/100, detail = paste(i, "%"))
         }
-        req(key())
-        key <- key()
-        write.csv(key, file, row.names = FALSE)
+        processed_data$key_data <- key()
+        
       })
+      }
+        write.csv(processed_data$key_data, file, row.names = FALSE)
+      
     }
   )
   
@@ -218,9 +248,11 @@ server <- function(input, output, session) {
     filename = function() {
       paste("de-i-file", Sys.Date(), ".csv", sep = "")
     },content = function(file) {
+      if (is.null(processed_data$key_data)) {
       req(anony_data())
-      anony_data_result <- anony_data()
-      write.csv(anony_data_result, file, row.names = FALSE)
+      processed_data$ddi <- anony_data()
+      }
+      write.csv(processed_data$ddi, file, row.names = FALSE)
     }    
   )
   
