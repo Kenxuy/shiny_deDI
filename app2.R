@@ -19,12 +19,14 @@ ui <- fluidPage(
   sidebarLayout(
     sidebarPanel(
       tabsetPanel(
+        # main tab
         tabPanel("De-identify", value = "panel1", 
                  # File input
                  fileInput("file", "Choose raw data file"),
                  
                  # Separator selection
                  selectInput("separator", "Select separator", choices = c(",", ";", "\t"), selected = ","),
+                 
                  # Header selection
                  checkboxInput("header", "File contains headers", value = TRUE),
                  
@@ -32,6 +34,7 @@ ui <- fluidPage(
                  selectInput("variables", "Select identifier variables", choices = NULL, multiple = TRUE),
                  selectInput("variablesrem", "Select removable variables", choices = NULL, multiple = TRUE),
                  textInput("salt","Insert Salt",width = "1000px"),
+                 
                  # Text inputs for variable prefixes
                  uiOutput("variable_prefixes"),
                  
@@ -41,17 +44,22 @@ ui <- fluidPage(
                  radioButtons("uploadMask", "Choose Masknames Source:",
                               choices = c("Upload File", "No Masknames"),
                               selected = "No Masknames"),
+                 
+                 # upload free-text identifiers
                  conditionalPanel(
                    condition = "input.uploadMask == 'Upload File'",
                    fileInput("masknames", "Masked FT")
                  ),
+                 
+                 # generate and download de-identified data
                  downloadButton("ddi", "Generate De-identified Data")),
+        
+        # second tab
         tabPanel("Review", value = "panel2", 
                  helpText("Click to de-identify data"),
                  actionButton("DI_data", "De-Identify Data"),
-                 helpText("Calculate K-anonymity"),
-                 selectInput("variables_k", "Select variables", choices = NULL, multiple = TRUE),
-                 actionButton("K_anony", "Calculate K-anonymity"))
+                 selectInput("variables_k", "Select variables for K-anonymity", choices = NULL, multiple = TRUE),
+        )
       )
       
     ),
@@ -61,7 +69,7 @@ ui <- fluidPage(
       tabsetPanel(type = "tabs",
                   tabPanel("Raw Data", DTOutput("data_table")),
                   tabPanel("De-Identified Data", DTOutput("DI_table")),
-                  tabPanel("Summary", tableOutput("summary"), tableOutput("records"))
+                  tabPanel("Summary", tableOutput("summary"), verbatimTextOutput("check"))
       )
     )
   )
@@ -125,6 +133,10 @@ server <- function(input, output, session) {
     req(data())
     updateSelectInput(session, "variablesrem", choices = names(data()))
   })
+  observe({
+    req(data())
+    updateSelectInput(session, "variables_k", choices = names(data()))
+  })
   
   # Display raw data
   output$data_table <- renderDT({
@@ -143,7 +155,19 @@ server <- function(input, output, session) {
     )
   })
   
-  # store key, anony_data
+  # render k-anonymity 
+  output$check <- renderPrint({
+    paste0("The k-anonymity is ",
+      k_anonymity = data()[,input$variables_k] %>% 
+        group_by(across(everything())) %>% 
+        count() %>%
+        arrange(n) %>%
+        slice(1) %>%
+        pull(n) %>% min()
+    )
+  })
+  
+  # store key, anony_data, k value
   processed_data <- reactiveValues(
     key_data = NULL,
     ddi = NULL
@@ -152,25 +176,25 @@ server <- function(input, output, session) {
   # Generate key
   key <- reactive({
     if (is.null(processed_data$key_data)) {
-    req(data(), input$variables)
-    # distinct identifier columns
-    selected <- data()[, input$variables, drop = FALSE]%>% distinct()
-    # Get the prefixes data frame
-    prefixes <- variable_prefixes()
-    
-    key_data<-data()[, input$variables, drop = FALSE]%>% distinct()%>%
-      rename_with(~paste0("Anon", .), everything())%>%
-      mutate(across(everything(), ~anonymise(.)))%>%
-      mutate(across(everything(), ~paste0(str_sub(.,1,5),str_sub(.,-5,-1))))%>%
-      bind_cols(selected)
-    
-    # Add prefixes to the corresponding columns
-    for (i in seq_along(prefixes$Variable)) {
-      variable <- prefixes$Variable[i]
-      prefix <- prefixes$Prefix[i]
-      key_data[[paste0("Anon", variable)]] <- paste0(prefix, key_data[[paste0("Anon", variable)]])
-    }
-    key_data
+      req(data(), input$variables)
+      # distinct identifier columns
+      selected <- data()[, input$variables, drop = FALSE]%>% distinct()
+      # Get the prefixes data frame
+      prefixes <- variable_prefixes()
+      
+      key_data<-data()[, input$variables, drop = FALSE]%>% distinct()%>%
+        rename_with(~paste0("Anon", .), everything())%>%
+        mutate(across(everything(), ~anonymise(.)))%>%
+        mutate(across(everything(), ~paste0(str_sub(.,1,5),str_sub(.,-5,-1))))%>%
+        bind_cols(selected)
+      
+      # Add prefixes to the corresponding columns
+      for (i in seq_along(prefixes$Variable)) {
+        variable <- prefixes$Variable[i]
+        prefix <- prefixes$Prefix[i]
+        key_data[[paste0("Anon", variable)]] <- paste0(prefix, key_data[[paste0("Anon", variable)]])
+      }
+      key_data
     }
   })
   
@@ -191,7 +215,7 @@ server <- function(input, output, session) {
       } else {
         data()%>% left_join(processed_data$key_data)
       }
-        
+      
       ddi <- ddi %>% 
         select(-input$variables)%>%
         select(-input$variablesrem)%>%
@@ -202,22 +226,24 @@ server <- function(input, output, session) {
             str_replace_all(x, paste0(freetext()$Identifiers,collapse="|"), "XXX")
           } else {x}}))
       
-     processed_data$ddi <- ddi 
+      processed_data$ddi <- ddi 
     })
     
   })
+  
+
   
   # render De-identified Data when "De-identify data" is clicked
   observeEvent(input$DI_data, {
     output$DI_table <- renderDT(
       if (is.null(processed_data$key_data)) {
-      isolate({ # prevent table from re-rendering when other inputs of anony() changes 
-        processed_data$ddi <- anony_data()
-      })
+        isolate({ # prevent table from re-rendering when other inputs of anony() changes 
+          processed_data$ddi <- anony_data()
+        })
         processed_data$ddi
       }
-     )
-  
+    )
+    
   })
   
   
@@ -226,19 +252,20 @@ server <- function(input, output, session) {
     filename = function() {
       paste("key", Sys.Date(), ".csv", sep = "")
     },content = function(file) {
+      # check whether key has already been generated
       if (is.null(processed_data$key_data)) {
-      # Progress indicator starts
-      withProgress(message = 'Generating Key...', value = 0, {
-        for (i in 1:100) {
-          # Simulate key generation process (replace this with your actual key generation logic)
-          Sys.sleep(0.01)
-          incProgress(1/100, detail = paste(i, "%"))
-        }
-        processed_data$key_data <- key()
-        
-      })
+        # Progress indicator starts
+        withProgress(message = 'Generating Key...', value = 0, {
+          for (i in 1:100) {
+            # Simulate key generation process (replace this with your actual key generation logic)
+            Sys.sleep(0.01)
+            incProgress(1/100, detail = paste(i, "%"))
+          }
+          processed_data$key_data <- key()
+          
+        })
       }
-        write.csv(processed_data$key_data, file, row.names = FALSE)
+      write.csv(processed_data$key_data, file, row.names = FALSE)
       
     }
   )
@@ -248,9 +275,10 @@ server <- function(input, output, session) {
     filename = function() {
       paste("de-i-file", Sys.Date(), ".csv", sep = "")
     },content = function(file) {
-      if (is.null(processed_data$key_data)) {
-      req(anony_data())
-      processed_data$ddi <- anony_data()
+      # check whether dde-identified data has already been generated
+      if (is.null(processed_data$ddi)) {
+        req(anony_data())
+        processed_data$ddi <- anony_data()
       }
       write.csv(processed_data$ddi, file, row.names = FALSE)
     }    
