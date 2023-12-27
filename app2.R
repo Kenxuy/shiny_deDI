@@ -69,7 +69,9 @@ ui <- fluidPage(
       tabsetPanel(type = "tabs",
                   tabPanel("Raw Data", DTOutput("data_table")),
                   tabPanel("De-Identified Data", DTOutput("DI_table")),
-                  tabPanel("Summary", tableOutput("summary"), verbatimTextOutput("check"))
+                  tabPanel("Summary", tableOutput("summary"), 
+                           verbatimTextOutput("k_anony"),
+                           verbatimTextOutput("one2one"))
       )
     )
   )
@@ -156,7 +158,7 @@ server <- function(input, output, session) {
   })
   
   # render k-anonymity 
-  output$check <- renderPrint({
+  output$k_anony <- renderPrint({
     paste0("The k-anonymity is ",
       k_anonymity = data()[,input$variables_k] %>% 
         group_by(across(everything())) %>% 
@@ -166,6 +168,21 @@ server <- function(input, output, session) {
         pull(n) %>% min()
     )
   })
+  
+  # render one-to-one output
+  output$one2one <- renderPrint({
+    
+    paste0("Do anonymised identifiers have one-to-one match with original identifiers?",
+           if (is.null(processed_data$key) & is.null(processed_data$ddi)) {
+             return("De-identify data first")
+           } else if (processed_data$key) {
+             return("Yes")
+           } else {
+             return("No")
+           }
+    )
+  })
+  
   
   # store key, anony_data, k value
   processed_data <- reactiveValues(
@@ -236,7 +253,7 @@ server <- function(input, output, session) {
   # render De-identified Data when "De-identify data" is clicked
   observeEvent(input$DI_data, {
     output$DI_table <- renderDT(
-      if (is.null(processed_data$key_data)) {
+      if (is.null(processed_data$key)) {
         isolate({ # prevent table from re-rendering when other inputs of anony() changes 
           processed_data$ddi <- anony_data()
         })
